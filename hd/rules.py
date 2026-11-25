@@ -173,6 +173,13 @@ def poids(case: Case):
     return None
 
 
+def w_ref(case: Case):
+    try:
+        return poids(case)
+    except Exception:
+        return None
+
+
 def dose_per_4w(row):
     f = FREQUENCES.get(row.get("frequence") or "")
     if f is None or pd.isna(row.get("dose")):
@@ -245,6 +252,21 @@ def anemie(case: Case) -> DomainResult:
     ase = tx_active(case, "ASE")
     hif = tx_active(case, "HIF-PHI")
     fer = tx_active(case, "Fer IV")
+    # traitement de l'anémie débuté APRÈS le bilan de référence : son effet n'est pas évaluable sur ce bilan
+    ref = ref_day(case)
+
+    def _after_ref(df):
+        if df.empty:
+            return df.iloc[0:0]
+        d = pd.to_datetime(df["date_modif"], errors="coerce")
+        return df[(d > ref) & df["dose_precedente"].isna()]
+
+    for lbl_df in (_after_ref(ase), _after_ref(hif)):
+        for _, x in lbl_df.iterrows():
+            r.add(OK, f"{x.get('molecule')} débuté le {fdate(x['date_modif'])}, après ce bilan : effet non évaluable ici, "
+                      "à juger sur le prochain bilan.")
+    ase = ase.drop(_after_ref(ase).index) if not ase.empty else ase
+    hif = hif.drop(_after_ref(hif).index) if not hif.empty else hif
     ase_any = tx_any(case, "ASE")
     w = poids(case)
 
@@ -367,7 +389,13 @@ def anemie(case: Case) -> DomainResult:
 
     # ---------- fer
     fer_lbl = ", ".join(tx_label(x) for _, x in fer.iterrows()) if not fer.empty else None
-    if ferr is None or cst is None:
+    fer_post = _after_ref(fer) if not fer.empty else fer
+    if not fer.empty and len(fer_post) == len(fer):
+        # fer IV débuté après ce bilan : décision déjà prise en connaissance de ces résultats
+        r.add(OK, f"{fer_lbl} débuté le {fdate(fer_post.iloc[0]['date_modif'])}, après ce bilan (ferritine {fmt(ferr, 0)} µg/L, "
+                  f"CST {fmt(cst, 0)} %) : décision déjà prise, réévaluer ferritine et CST au prochain bilan "
+                  "(suspension si ferritine > 700 ou CST ≥ 40 %).")
+    elif ferr is None or cst is None:
         r.add(MANQUE, "Ferritine et/ou CST manquants : bilan martial à compléter.")
     elif ferr > 700 or cst >= 40:
         if fer_lbl:
@@ -507,9 +535,23 @@ def volemie(case: Case) -> DomainResult:
         parts.append(f"antihypertenseurs : {ahtn_lbl}")
     if pas:
         parts.append(f"PAS prédialyse ~{fmt(pas, 0)} mmHg")
+    pfin = case.ctx.get("poids_fin_moyen")
+    ppid = case.ctx.get("ppid_moyenne")
+    if pfin:
+        parts.append(f"poids de fin moyen {fmt(pfin, 1)} kg")
+    if ppid:
+        parts.append(f"PPID moyenne {fmt(ppid, 1)} kg")
     if hypo == "Oui":
         parts.append("hypotensions intradialytiques")
     r.summary = ", ".join(parts) + "." if parts else ""
+    if pfin and not rx_hist.empty:
+        ecart = pfin - float(rx_hist.iloc[-1]["poids_sec"])
+        if abs(ecart) >= 1.0:
+            sens = "sous" if ecart < 0 else "au-dessus du"
+            r.add(ALERTE, f"Poids de fin moyen {fmt(pfin, 1)} kg, {fmt(abs(ecart), 1)} kg {sens} PS prescrit {fmt(rx_hist.iloc[-1]['poids_sec'], 1)} kg : "
+                          "vérifier la cohérence du poids sec (PS réel atteint ? objectif non atteint ?).")
+    if ppid and w_ref(case) and ppid / w_ref(case) > 0.04:
+        r.add(ALERTE, f"PPID moyenne {fmt(ppid, 1)} kg (> 4 % du poids) : apports hydrosodés à revoir, NaD à confronter à la natrémie.")
 
     if not s:
         r.add(MANQUE, "NT-proBNP non renseigné.")
@@ -639,12 +681,25 @@ def phosphocalcique(case: Case) -> DomainResult:
             opts = "majorer le calcimimétique" if not calcimim.empty else "introduire un calcimimétique (cinacalcet / Parsabiv) ou une vitamine D active selon Ca et P"
             r.add(MODIF, f"PTH {fmt(pth, 0)} > 9 × LSN ({fmt(PTH_MAX, 0)}) : {opts}.")
     elif pth < PTH_MIN:
-        if pal_high:
-            r.add(OK, "PTH < 2 × LSN mais PAL osseuses élevées : ne pas réduire d'emblée les traitements, surveiller.")
-        elif not calcimim.empty or not vitd.empty:
-            r.add(MODIF, f"PTH {fmt(pth, 0)} < 2 × LSN : freinage excessif, réduire calcimimétique et/ou vitamine D active.")
+        freinateurs = [lbl(x) for x in (calcimim, vitd) if not x.empty]
+        if freinateurs and pal_high:
+            r.add(OK, f"PTH {fmt(pth, 0)} < 2 × LSN sous {', '.join(freinateurs)} mais PAL osseuses élevées : "
+                      "ne pas réduire d'emblée, contrôler PTH et PAL osseuses.")
+        elif freinateurs:
+            r.add(MODIF, f"PTH {fmt(pth, 0)} < 2 × LSN ({fmt(PTH_MIN, 0)}) : freinage excessif, réduire {', '.join(freinateurs)}.")
         else:
-            r.add(ALERTE, "PTH basse sans traitement freinateur : risque d'os adynamique, surveiller.")
+            rx = rx_current(case)
+            bain_ca = rx.get("bain_ca") if rx is not None else None
+            txt = (f"PTH {fmt(pth, 0)} pg/mL (< 2 × LSN, ~{fmt(pth / PTH_LSN, 1)} × LSN) sans traitement freinateur : "
+                   "risque d'os adynamique. Éviter la charge calcique (suppléments calciques, chélateurs calciques)")
+            if bain_ca is not None and not pd.isna(bain_ca) and bain_ca >= 1.5:
+                txt += f" ; discuter un bain calcium à 1,25 mmol/L (actuellement {fmt(bain_ca)})"
+            r.add(ALERTE, txt + ".")
+            if pal_high:
+                r.add(ALERTE, f"PAL osseuses {fmt(pal, 1)} µg/L élevées malgré une PTH basse : discordance, "
+                              "rechercher une autre cause (fracture récente, carence en vitamine D, autre ostéopathie).")
+            if not calc.empty:
+                r.add(MODIF, f"PTH basse : réévaluer la supplémentation calcique ({lbl(calc)}).")
     else:
         if pal_rising or pal_high:
             if calcimim_recent:
@@ -716,13 +771,31 @@ def nutrition(case: Case) -> DomainResult:
     if wt_loss:
         signals.append("perte de poids ≥ 5 %")
 
+    # cinétique sur ~6 mois : amélioration si albumine (+2 g/L) ou préalbumine (+20 %) progresse sans que l'autre ne baisse
+    d_last = s_alb[-1][0]
+    alb_6m = [v for d, v in s_alb if (d_last - d).days <= 200]
+    pre_6m = [v for d, v in s_pre if (d_last - d).days <= 200]
+    alb_up = len(alb_6m) >= 3 and alb_6m[-1] - min(alb_6m[:-1]) >= 2 and alb_6m[-1] >= alb_6m[-2] - 1
+    pre_up = len(pre_6m) >= 3 and pre_6m[-1] >= min(pre_6m[:-1]) * 1.2 and pre_6m[-1] >= pre_6m[-2] * 0.9
+    alb_down = len(s_alb) >= 2 and alb <= s_alb[-2][1] - 3
+    pre_down = len(s_pre) >= 2 and pre is not None and pre < s_pre[-2][1] * 0.85
+    improving = (alb_up or pre_up) and not (alb_down or pre_down or wt_loss)
+
     if alb <= 35:
         r.add(ALERTE, "Albumine ≤ 35 g/L : signal d'alerte nutritionnel, même en contexte inflammatoire" + (f" (CRP {fmt(crp, 1)})" if crp and crp > CRP_INFLAM else "") + ".")
     if npcr is None:
         r.add(MANQUE, "nPCR non disponible : à récupérer.")
     if pre is None:
         r.add(MANQUE, "Préalbumine non disponible.")
-    if len(signals) >= 2:
+    if improving and signals:
+        evol = []
+        if alb_up:
+            evol.append(f"albumine {fmt(min(alb_6m[:-1]), 0)} → {fmt(alb, 0)} g/L")
+        if pre_up:
+            evol.append(f"préalbumine {fmt(min(pre_6m[:-1]))} → {fmt(pre)} g/L")
+        r.add(OK, f"Paramètres encore bas mais en amélioration ({', '.join(evol)}) : poursuivre la prise en charge nutritionnelle en cours "
+                  "et la surveillance (poids, albumine, préalbumine, nPCR) ; pas d'escalade immédiate.")
+    elif len(signals) >= 2:
         if not np_.empty or not cno.empty:
             r.add(MODIF, f"Dégradation nutritionnelle concordante ({', '.join(signals)}) sous support nutritionnel : réévaluer apports et tolérance avec la diététicienne.")
         else:
@@ -740,6 +813,8 @@ def epuration(case: Case) -> DomainResult:
     r = DomainResult("epuration", "Épuration")
     s = series(case, "ktv_daug")
     _, ktvi = last(case, "ktv_ionique")
+    if ktvi is None and case.ctx.get("ktv_ionique_moyen"):
+        ktvi = float(case.ctx["ktv_ionique_moyen"])
     _, up = last(case, "uree_pre")
     _, uq = last(case, "uree_post")
     rx = rx_current(case)

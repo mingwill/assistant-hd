@@ -79,6 +79,9 @@ class Contexte(BaseModel):
     symptomes_anemie: Optional[str] = Field(None, description="Non renseigné, Non, Oui")
     diurese_residuelle: Optional[str] = Field(None, description="Non renseigné, Non, Oui")
     recirculation: Optional[float] = Field(None, description="Recirculation mesurée (Fresenius 6008), %")
+    poids_fin_moyen: Optional[float] = Field(None, description="Poids de fin de séance moyen du mois, kg (synthèse des séances)")
+    ppid_moyenne: Optional[float] = Field(None, description="Prise de poids interdialytique moyenne, kg")
+    ktv_ionique_moyen: Optional[float] = Field(None, description="Kt/V ionique de fin de séance moyen du mois")
     notes: Optional[str] = None
 
 
@@ -89,4 +92,8 @@ class Extraction(BaseModel):
     poids_kg: Optional[float] = None
     recirculation_pct: Optional[float] = None
     hypotensions_intradialytiques: Optional[bool] = None
+    pas_pre_moyenne: Optional[float] = Field(None, description="PAS de début de séance moyenne du mois, mmHg")
+    poids_fin_moyen: Optional[float] = Field(None, description="Poids de fin de séance moyen, kg")
+    ppid_moyenne: Optional[float] = Field(None, description="Prise de poids interdialytique moyenne, kg")
+    ktv_ionique_moyen: Optional[float] = Field(None, description="Kt/V ionique de fin de séance moyen")
     incertitudes: list[str] = Field(description="Valeurs ambiguës, illisibles ou à vérifier (ex. fréquences d'administration)")

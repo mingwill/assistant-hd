@@ -114,6 +114,9 @@ CTX_DEFAULT = {
     "symptomes_anemie": "Non renseigné",
     "diurese_residuelle": "Non renseigné",
     "recirculation": None,
+    "poids_fin_moyen": None,
+    "ppid_moyenne": None,
+    "ktv_ionique_moyen": None,
     "notes": "",
 }
 
@@ -160,6 +163,9 @@ def normalize(df: pd.DataFrame, fields) -> pd.DataFrame:
             ).astype("float64")
         else:
             out[key] = col.astype("object").where(col.notna(), None)
+    if "cst" in out.columns:
+        # CST parfois rendu en fraction par le laboratoire (0.38 = 38 %) : une CST réelle ≤ 1 % n'existe pas
+        out["cst"] = out["cst"].where(~(out["cst"] <= 1), out["cst"] * 100)
     return out
 
 

@@ -154,6 +154,29 @@ def test_pas_de_denutrition_sur_albumine_seule():
     assert rules.MODIF not in [f.level for f in r.findings]
 
 
+def test_nutrition_basse_mais_en_amelioration_pas_d_escalade():
+    bio = [{"date": d, "albumine": a, "prealbumine": p} for d, a, p in
+           [("2026-05-06", 26, 0.11), ("2026-07-01", 29, 0.10), ("2026-09-02", 31, 0.13), ("2026-10-07", 33, 0.11), ("2026-11-04", 33, 0.13)]]
+    r = rules.nutrition(case(bio))
+    assert rules.MODIF not in [f.level for f in r.findings]
+    assert "en amélioration" in texts(r, rules.OK)
+    assert "signal d'alerte" in texts(r, rules.ALERTE)  # albumine ≤ 35 reste un signal
+
+
+def test_pth_basse_sans_freinateur_os_adynamique_bain_ca():
+    r = rules.phosphocalcique(case([{"date": "2026-10-07", "pth": 16.6, "ca": 2.2, "phos": 1.6, "pal_os": 25.9}], [],
+                                   [{"date": "2026-10-01", "bain_ca": 1.5}]))
+    t = texts(r, rules.ALERTE)
+    assert "os adynamique" in t and "bain calcium à 1,25" in t and "discordance" in t
+    assert "pmol" not in texts(r)
+
+
+def test_pth_basse_sous_calcimimetique_reduire():
+    cina = {"categorie": "Calcimimétique (agoniste CaSR)", "molecule": "Cinacalcet", "dose": 30, "unite": "mg", "frequence": "par jour", "statut": "En cours"}
+    r = rules.phosphocalcique(case([{"date": "2026-10-07", "pth": 100, "ca": 2.2, "phos": 1.4, "pal_os": 12}], [cina]))
+    assert "réduire Cinacalcet" in texts(r, rules.MODIF)
+
+
 def test_recirculation_catheter_pas_d_alerte():
     r = rules.epuration(case([{"date": "2026-10-07", "ktv_daug": 1.71}], [], [], abord_type="Cathéter tunnelisé", recirculation=20))
     assert r.status in (rules.OK,)

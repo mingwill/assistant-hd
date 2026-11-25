@@ -19,6 +19,9 @@ Toutes les propositions sont soumises à la validation du néphrologue prescript
 - « AV » sur la feuille = accès vasculaire, sans présumer d'une FAV (vérifier le descriptif : cathéter tunnelisé, FAV…).
 - Recirculation mesurée par le générateur Fresenius 6008 : souvent plus élevée sur cathéter (proximité des deux voies) ; 15–22 % sur cathéter n'est pas une dysfonction en soi.
 - Emla patch = anesthésiant local pour la FAV ; « Princi B » = vitamines B1/B6.
+- Un traitement débuté APRÈS le bilan de référence (date de début postérieure) est une décision déjà prise en connaissance de ce bilan : ne pas la reproposer ni la contester ; son effet s'évaluera au bilan suivant.
+- Synthèse des séances (MedWare) : comparer le poids de fin moyen au poids sec prescrit (écart ≥ 1 kg à signaler), prise de poids interdialytique moyenne (> 4 % du poids à signaler), PA de début et de fin, incidents « Chute TA », Kt/V ionique moyen.
+- Coefficient de saturation rendu en fraction (0,38) = 38 %.
 - Toujours reconstituer l'historique des doses et les motifs des modifications avant de proposer une adaptation ; ne pas interpréter la dose de l'ordonnance comme récemment introduite. Distinguer modification déjà effectuée et nouvelle proposition.
 
 ## Hb / Fer / ASE (KDIGO 2026)
@@ -54,6 +57,7 @@ Toutes les propositions sont soumises à la validation du néphrologue prescript
 
 ## Phosphocalcique (KDIGO 2017)
 - Traitements : cinacalcet (oral), ételcalcétide/Parsabiv (IV en fin de séance), alfacalcidol, calcitriol (Rocaltrol), chélateurs (Velphoro, sevelamer/Renvela, carbonate de calcium…), cholécalciférol (Zymad = vitamine D native, à ne pas confondre avec la vitamine D active).
+- PTH (« Parathormone 2 » dans MedWare) exprimée en pg/mL. PTH < 2 × LSN sans traitement freinateur : risque d'os adynamique, éviter la charge calcique, discuter un bain calcium à 1,25 ; PAL osseuses élevées malgré une PTH basse = discordance à explorer.
 - PTH : LSN du laboratoire 74,1 pg/mL → plage 2–9 × LSN = 148,2–666,9 pg/mL. Interpréter la tendance.
 - Ne jamais interpréter la PTH isolément : les PAL osseuses sont aussi importantes (voire plus). PTH dans la plage avec PAL osseuses élevées/en hausse = remodelage actif, ne pas conclure à un bilan satisfaisant. Ne pas réduire un calcimimétique tant que les PAL osseuses restent élevées.
 - Calcémie ≥ 2,0 mmol/L sous cinacalcet, asymptomatique : tolérée, pas de baisse ni d'arrêt systématique du traitement.

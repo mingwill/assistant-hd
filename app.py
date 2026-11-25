@@ -12,7 +12,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from hd import ai, dossier, exemple, rules, schema
+from hd import ai, dossier, exemple, masquage, rules, schema
 
 st.set_page_config(page_title="Assistant HD – HUS", page_icon="🩺", layout="wide")
 
@@ -100,6 +100,22 @@ def num_cfg(fields):
     return cfg
 
 
+@st.cache_data(show_spinner="Préparation des pages…", max_entries=20)
+def preparer_pages(fichiers: tuple, masquer_pdf: bool) -> list:
+    return masquage.preparer(list(fichiers), masquer_pdf)
+
+
+def zip_pages(pages: list) -> bytes:
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for nom, data, _ in pages:
+            z.writestr(nom, data)
+    return buf.getvalue()
+
+
 # ------------------------------------------------------------------ en-tête
 st.title("🩺 Assistant bilans mensuels hémodialyse")
 st.caption("HUS Strasbourg – pilote. Données fictives ou réellement anonymisées uniquement. "
@@ -176,6 +192,9 @@ with tabs[4]:
         st.selectbox("Type d'abord vasculaire", schema.ABORDS, key="ctx_abord_type")
         st.number_input("Recirculation (%) – Fresenius 6008", min_value=0.0, step=1.0, key="ctx_recirculation")
         st.selectbox("Diurèse résiduelle", schema.OUI_NON, key="ctx_diurese_residuelle")
+        st.number_input("Poids de fin de séance moyen (kg)", min_value=0.0, step=0.1, key="ctx_poids_fin_moyen")
+        st.number_input("Prise de poids interdialytique moyenne (kg)", min_value=0.0, step=0.1, key="ctx_ppid_moyenne")
+        st.number_input("Kt/V ionique moyen du mois", min_value=0.0, step=0.05, key="ctx_ktv_ionique_moyen")
     with c2:
         st.selectbox("Antécédents thrombotiques", schema.OUI_NON, key="ctx_thrombose")
         st.checkbox("dont thrombose de FAV", key="ctx_thrombose_fav")
@@ -194,60 +213,56 @@ with tabs[4]:
                  placeholder="ex. Mircera réduit de 150 à 75 µg en septembre devant une Hb trop haute…")
 
 ctx = current_ctx()
-for k in ("poids_kg", "pas_pre", "fevg", "recirculation"):
+for k in ("poids_kg", "pas_pre", "fevg", "recirculation", "poids_fin_moyen", "ppid_moyenne", "ktv_ionique_moyen"):
     if not ctx.get(k):
         ctx[k] = None
 
 # ------------------------------------------------------------------ import captures
 with tabs[0]:
-    st.subheader("Importer des captures d'écran")
-    st.caption("Bilans biologiques (DÉBUT/FIN), ordonnance (jaune = ambulatoire, vert = en dialyse, rouge = suspendu), "
-               "prescription et feuilles de séances. L'IA préremplit les onglets ; **vérifiez chaque valeur** avant la synthèse. "
-               "Masquez nom, prénom, date de naissance et IPP avant l'import.")
-    files = st.file_uploader("Captures (PNG, JPG) ou PDF", type=["png", "jpg", "jpeg", "webp", "pdf"],
+    st.subheader("Importer des documents")
+    st.caption("PDF MedWare (bilan mensuel, prescription de dialyse, synthèse des séances, traitements) ou captures d'écran. "
+               "L'IA préremplit les onglets ; **vérifiez chaque valeur** avant la synthèse.")
+    files = st.file_uploader("Documents PDF ou captures (PNG, JPG)", type=["png", "jpg", "jpeg", "webp", "pdf"],
                              accept_multiple_files=True, key=f"up_{ver}")
+    masquer_pdf = st.checkbox("Masquer l'en-tête patient des PDF MedWare (nom, naissance, adresse, téléphone, IPP)", value=True)
+    pages, verifie = [], False
+    if files:
+        try:
+            pages = preparer_pages(tuple((f.name, f.getvalue()) for f in files), masquer_pdf)
+        except Exception as e:
+            st.error(f"Lecture des fichiers impossible ({type(e).__name__}) : {e}")
+        if pages:
+            with st.expander(f"👁️ Aperçu de ce qui sera envoyé à l'IA ({len(pages)} page(s)) – à vérifier", expanded=True):
+                cols = st.columns(3)
+                for i, (nom, img, masque) in enumerate(pages):
+                    cols[i % 3].image(img, caption=nom + (" – en-tête masqué" if masque else " – NON masqué"), width="stretch")
+            if any(not m for _, _, m in pages):
+                st.warning("Les captures d'écran (et les PDF si le masquage est décoché) ne sont pas masquées : "
+                           "vérifiez qu'aucun nom, date de naissance ou IPP n'est visible.")
+            verifie = st.checkbox("J'ai vérifié l'aperçu : aucune donnée identifiante n'est visible")
+            st.download_button("⬇️ Télécharger les pages masquées (pour Claude Desktop)", zip_pages(pages),
+                               file_name="pages_masquees.zip", mime="application/zip")
     note = st.text_input("Précision éventuelle (ex. « prendre en compte le bilan du 07/10 »)")
     if not API_KEY:
         st.warning("Clé ANTHROPIC_API_KEY non configurée : l'import automatique est indisponible (saisie manuelle possible).")
-    if st.button("Extraire et préremplir les cases", type="primary", disabled=not files or not API_KEY):
-        with st.spinner("Lecture des captures…"):
+    if st.button("Extraire et préremplir les cases", type="primary", disabled=not (pages and verifie and API_KEY)):
+        with st.spinner("Lecture des documents…"):
             try:
-                ex = ai.extract(ai.make_client(API_KEY), [(f.name, f.getvalue()) for f in files], note)
+                ex = ai.extract(ai.make_client(API_KEY), [(n, d) for n, d, _ in pages], note)
             except ai.AIError as e:
                 st.error(str(e))
+            except Exception as e:  # toute autre erreur : afficher en clair (Streamlit Cloud masque les tracebacks)
+                st.error(f"Erreur inattendue pendant l'extraction ({type(e).__name__}) : {e}")
             else:
-                # biologie : fusion par date
-                new_bio = schema.normalize(pd.DataFrame([b.model_dump() for b in ex.bilans]), schema.BIO_FIELDS)
-                merged = pd.concat([bio, new_bio], ignore_index=True)
-                merged = merged.groupby("date", dropna=False, sort=True).last().reset_index() if len(merged) else merged
-                # traitements : mise à jour par molécule
-                new_tx = schema.normalize(pd.DataFrame([t.model_dump() for t in ex.traitements]), schema.TX_FIELDS)
-                txm = tx.copy()
-                for _, row in new_tx.iterrows():
-                    m = str(row["molecule"] or "").strip().lower()
-                    idx = txm.index[txm["molecule"].fillna("").str.strip().str.lower() == m] if m else []
-                    if len(idx):
-                        for col in txm.columns:
-                            if row[col] is not None and not pd.isna(row[col]):
-                                txm.at[idx[0], col] = row[col]
-                    else:
-                        txm = pd.concat([txm, row.to_frame().T], ignore_index=True)
-                new_rx = schema.normalize(pd.DataFrame([p.model_dump() for p in ex.prescriptions]), schema.RX_FIELDS)
-                rxm = pd.concat([rx, new_rx], ignore_index=True)
-                if len(rxm):
-                    rxm = rxm.groupby("date", dropna=False, sort=True).last().reset_index()
-                newctx = dict(ctx)
-                if ex.poids_kg:
-                    newctx["poids_kg"] = ex.poids_kg
-                if ex.recirculation_pct:
-                    newctx["recirculation"] = ex.recirculation_pct
-                if ex.hypotensions_intradialytiques is not None:
-                    newctx["hypotensions_id"] = "Oui" if ex.hypotensions_intradialytiques else "Non"
-                set_case(merged, txm, rxm, newctx)
-                st.session_state.incertitudes = ex.incertitudes
-                st.session_state.import_msg = (f"{len(ex.bilans)} bilan(s), {len(ex.traitements)} traitement(s), "
-                                               f"{len(ex.prescriptions)} prescription(s) extraits.")
-                st.rerun()
+                if not (ex.bilans or ex.traitements or ex.prescriptions):
+                    st.warning("Aucune donnée reconnue sur ces captures."
+                               + (" Remarques : " + " ; ".join(ex.incertitudes) if ex.incertitudes else ""))
+                else:
+                    set_case(*dossier.fusionner(bio, tx, rx, ctx, ex))
+                    st.session_state.incertitudes = ex.incertitudes
+                    st.session_state.import_msg = (f"{len(ex.bilans)} bilan(s), {len(ex.traitements)} traitement(s), "
+                                                   f"{len(ex.prescriptions)} prescription(s) extraits.")
+                    st.rerun()
     if st.session_state.get("import_msg"):
         st.success(st.session_state.import_msg + " Vérifiez les onglets Biologie, Traitements et Prescription HD.")
     if st.session_state.get("incertitudes"):
