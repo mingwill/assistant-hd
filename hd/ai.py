@@ -6,9 +6,12 @@ import io
 import json
 from pathlib import Path
 
-import anthropic
+from typing import Optional
 
-from .modeles import Extraction
+import anthropic
+from pydantic import ValidationError
+
+from .modeles import Bilan, Extraction, Prescription, Traitement
 
 MODEL = "claude-opus-5-5"
 BETAS = ["server-side-fallback-2026-07-01"]
@@ -126,26 +129,64 @@ def _api_error_msg(e: anthropic.APIError) -> str:
     return f"Erreur API : {e}"
 
 
+def _schema_compact() -> str:
+    """Description compacte des champs attendus (le schéma strict complet dépasse la limite de grammaire de l'API)."""
+    lignes = []
+    for nom, modele in (("bilans[]", Bilan), ("traitements[]", Traitement), ("prescriptions[]", Prescription)):
+        champs = []
+        for k, f in modele.model_fields.items():
+            ann = f.annotation
+            typ = "nombre" if ann in (float, Optional[float]) else "texte"
+            champs.append(f"{k} ({typ}{' – ' + f.description if f.description else ''})")
+        lignes.append(f"- {nom} : " + " ; ".join(champs))
+    for k, f in Extraction.model_fields.items():
+        if k not in ("bilans", "traitements", "prescriptions"):
+            lignes.append(f"- {k}{' : ' + f.description if f.description else ''}")
+    return "\n".join(lignes)
+
+
+FORMAT_REPONSE = """
+Format de réponse : UNIQUEMENT un objet JSON valide, sans texte avant ou après, de la forme
+{"bilans": [...], "traitements": [...], "prescriptions": [...], "poids_kg": null, "recirculation_pct": null,
+ "hypotensions_intradialytiques": null, "pas_pre_moyenne": null, "poids_fin_moyen": null, "ppid_moyenne": null,
+ "ktv_ionique_moyen": null, "incertitudes": ["..."]}
+Omets les champs sans valeur (ou mets null). Nombres avec un point décimal (12.3), dates AAAA-MM-JJ.
+Champs disponibles :
+"""
+
+
+def parse_extraction(text: str) -> Extraction:
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.split("\n", 1)[1] if "\n" in t else t
+        t = t.rsplit("```", 1)[0]
+    debut, fin = t.find("{"), t.rfind("}")
+    if debut < 0 or fin <= debut:
+        raise AIError("Extraction impossible : la réponse ne contient pas de données structurées.")
+    try:
+        return Extraction.model_validate_json(t[debut:fin + 1])
+    except ValidationError as e:
+        raise AIError(f"Extraction mal formée ({e.error_count()} erreur(s)) : réessayer, éventuellement avec moins de documents à la fois.") from e
+
+
 def extract(client: anthropic.Anthropic, files: list[tuple[str, bytes]], note: str = "") -> Extraction:
     content = [_image_block(n, d) for n, d in files]
     content.append({"type": "text", "text": "Extrais les données de ces documents." + (f"\nPrécision du médecin : {note}" if note else "")})
     try:
-        resp = client.beta.messages.parse(
+        with client.beta.messages.stream(
             model=MODEL,
-            max_tokens=16000,
+            max_tokens=32000,
             betas=BETAS,
             fallbacks="default",
-            system=EXTRACT_INSTRUCTIONS,
+            system=EXTRACT_INSTRUCTIONS + FORMAT_REPONSE + _schema_compact(),
             output_config={"effort": "medium"},
             messages=[{"role": "user", "content": content}],
-            output_format=Extraction,
-        )
+        ) as stream:
+            resp = stream.get_final_message()
     except anthropic.APIError as e:
         raise AIError(_api_error_msg(e)) from e
     _check(resp)
-    if resp.parsed_output is None:
-        raise AIError("Extraction impossible : réponse non structurée.")
-    return resp.parsed_output
+    return parse_extraction(_text(resp))
 
 
 # ------------------------------------------------------------------ synthèse
